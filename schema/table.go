@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jinzhu/inflection"
@@ -36,6 +35,11 @@ func SetTableNameInflector(fn func(string) string) {
 	tableNameInflector = fn
 }
 
+type fieldCache interface {
+	Load(key any) (any, bool)
+	Store(key, value any)
+}
+
 // Table represents a SQL table created from Go struct.
 type Table struct {
 	dialect Dialect
@@ -43,7 +47,7 @@ type Table struct {
 	// lookupCache memoizes LookupField results for dotted/prefixed column
 	// names (e.g. "author__name"). Those names miss FieldMap and take the
 	// slow path below, which clones the Field on every call.
-	lookupCache sync.Map // map[string]*Field
+	lookupCache fieldCache
 
 	Type      reflect.Type
 	ZeroValue reflect.Value // reflect.Struct

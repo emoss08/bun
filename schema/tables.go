@@ -8,11 +8,17 @@ import (
 	"github.com/puzpuzpuz/xsync/v3"
 )
 
+type tableCache interface {
+	Load(key reflect.Type) (*Table, bool)
+	Store(key reflect.Type, value *Table)
+	Range(f func(key reflect.Type, value *Table) bool)
+}
+
 type Tables struct {
 	dialect Dialect
 
 	mu     sync.Mutex
-	tables *xsync.MapOf[reflect.Type, *Table]
+	tables tableCache
 
 	inProgress map[reflect.Type]*Table
 }
@@ -81,7 +87,7 @@ func (t *Tables) InProgress(typ reflect.Type) *Table {
 func (t *Tables) Placeholder(typ reflect.Type) *Table {
 	table, ok := t.inProgress[typ]
 	if !ok {
-		table = new(Table)
+		table = &Table{lookupCache: new(sync.Map)}
 		t.inProgress[typ] = table
 	}
 	return table
