@@ -424,7 +424,7 @@ func (q *InsertQuery) getFields() ([]*schema.Field, error) {
 		return q.baseQuery.getFields()
 	}
 
-	var strct reflect.Value
+	var strct, slice reflect.Value
 
 	switch model := q.tableModel.(type) {
 	case *structTableModel:
@@ -433,7 +433,7 @@ func (q *InsertQuery) getFields() ([]*schema.Field, error) {
 		if model.sliceLen == 0 {
 			return nil, fmt.Errorf("bun: Insert(empty %T)", model.slice.Type())
 		}
-		strct = indirect(model.slice.Index(0))
+		slice = model.slice
 	default:
 		return nil, errNilModel
 	}
@@ -445,14 +445,64 @@ func (q *InsertQuery) getFields() ([]*schema.Field, error) {
 			q.addReturningField(f)
 			continue
 		}
-		if f.NotNull && q.marshalsToDefault(f, strct) {
-			q.addReturningField(f)
-			continue
+		if f.NotNull {
+			switch q.defaultedRows(f, strct, slice) {
+			case allRowsDefaulted:
+				q.addReturningField(f)
+				continue
+			case someRowsDefaulted:
+				if !q.db.HasFeature(feature.DefaultPlaceholder) && f.SQLDefault == "" {
+					return nil, fmt.Errorf(
+						"bun: Insert(%s): field %s takes the column default in some rows "+
+							"but has a value in others, and %s has no DEFAULT placeholder; "+
+							"declare the default with the bun:\"default:...\" tag or insert those rows separately",
+						q.table.TypeName, f.GoName, q.db.Dialect().Name(),
+					)
+				}
+			}
 		}
 		fields = append(fields, f)
 	}
 
 	return fields, nil
+}
+
+type rowsDefaulted uint8
+
+const (
+	noRowsDefaulted rowsDefaulted = iota
+	someRowsDefaulted
+	allRowsDefaulted
+)
+
+// defaultedRows reports how many of the rows being inserted would marshal f
+// to DEFAULT or NULL. A slice model is checked row by row: a field may only be
+// left out of the column list when every row takes the column default,
+// otherwise the rows that carry a value would lose it.
+func (q *InsertQuery) defaultedRows(f *schema.Field, strct, slice reflect.Value) rowsDefaulted {
+	if !slice.IsValid() {
+		if q.marshalsToDefault(f, strct) {
+			return allRowsDefaulted
+		}
+		return noRowsDefaulted
+	}
+
+	var defaulted, valued bool
+	for i, n := 0, slice.Len(); i < n; i++ {
+		if q.marshalsToDefault(f, indirect(slice.Index(i))) {
+			defaulted = true
+		} else {
+			valued = true
+		}
+		if defaulted && valued {
+			return someRowsDefaulted
+		}
+	}
+
+	if defaulted {
+		return allRowsDefaulted
+	}
+	return noRowsDefaulted
 }
 
 // marshalsToDefault checks if the value will be marshaled as DEFAULT or NULL (if DEFAULT placeholder is not supported)
